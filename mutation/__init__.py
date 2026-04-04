@@ -13,6 +13,16 @@ class PromptMutator:
         self._sc: SentenceContinuation | None = None
         self._cloze: ClozeGenerator | None = None
 
+    def _get_sc(self) -> SentenceContinuation:
+        if self._sc is None:
+            self._sc = SentenceContinuation()
+        return self._sc
+
+    def _get_cloze(self) -> ClozeGenerator:
+        if self._cloze is None:
+            self._cloze = ClozeGenerator()
+        return self._cloze
+
     def mutate(
         self,
         prompts: list[str],
@@ -27,23 +37,29 @@ class PromptMutator:
 
         for p in prompts:
             if strategy == "bt":
-                n_var = min(per_prompt, 6)
-                results.extend(back_translate(p, n_variants=n_var))
+                results.extend(back_translate(p, n_variants=min(per_prompt, 6)))
+
             elif strategy == "sc":
-                if self._sc is None:
-                    self._sc = SentenceContinuation()
-                results.extend(self._sc.generate(p, n_candidates=per_prompt))
+                results.extend(self._get_sc().generate(p, n_candidates=per_prompt))
+
             elif strategy == "cloze":
-                if self._cloze is None:
-                    self._cloze = ClozeGenerator()
-                results.extend(self._cloze.generate(p, n_candidates=per_prompt))
+                results.extend(self._get_cloze().generate(p, n_candidates=per_prompt))
+
             elif strategy == "all":
-                k = max(1, per_prompt // 2)
-                results.extend(back_translate(p, n_variants=k))
-                if self._sc is None:
-                    self._sc = SentenceContinuation()
-                results.extend(self._sc.generate(p, n_candidates=k))
+                # Distribute across all three strategies
+                k = max(1, per_prompt // 3)
+                results.extend(back_translate(p, n_variants=max(k, 1)))
+                results.extend(self._get_sc().generate(p, n_candidates=max(k, 1)))
+                results.extend(self._get_cloze().generate(p, n_candidates=max(k, 1)))
+
             else:
                 raise ValueError(f"Unknown strategy: {strategy!r}")
 
-        return list(dict.fromkeys(results))
+        # Deduplicate, excluding original prompts
+        seen = set(prompts)
+        deduped: list[str] = []
+        for r in results:
+            if r and r not in seen:
+                seen.add(r)
+                deduped.append(r)
+        return deduped

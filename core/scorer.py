@@ -4,17 +4,18 @@ import core.warnings_config  # noqa: F401 — load before torch/transformers
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+from core.device_utils import get_torch_device
 from core.model_utils import resolve_model_id
 
 
 class PromptScorer:
-    """Ranking-based prompt scoring with flan-t5 (negative log-loss per label)."""
+    """Ranking-based prompt scoring with mt0-large (negative log-loss per label)."""
 
     def __init__(self, model_path=None):
         model_id = resolve_model_id(
             model_path,
-            local_relative="models/flan-t5-large",
-            hub_id="google/flan-t5-large",
+            local_relative="models/mt0-large",
+            hub_id="bigscience/mt0-large",
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -22,7 +23,7 @@ class PromptScorer:
             torch_dtype=torch.float32,
         )
         self.model.eval()
-        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        self.device = get_torch_device()
         self.model.to(self.device)
         print(f"Scorer loaded on {self.device}")
 

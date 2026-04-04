@@ -3,6 +3,8 @@
 .env
 .CLAUDE.md
 docs
+models
+colab
 core/__pycache__
 mutation/__pycache__
 data/__pycache__

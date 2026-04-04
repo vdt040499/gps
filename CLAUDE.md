@@ -12,8 +12,8 @@ This file gives Claude (or any AI assistant) immediate project context without r
 Instead of English datasets (SuperGLUE, ANLI) like the original paper, this project:
 - Uses a **genetic algorithm** to **automatically search for strong prompts** for Vietnamese NLP
 - Main task: **sentiment analysis** on UIT-VSFC (positive / negative / neutral)
-- Scoring model: `google/flan-t5-large` (~770M params, runs on CPU/MPS)
-- Prompt generator for mutations: `google/flan-t5-base` (~250M params)
+- Scoring model: `bigscience/mt0-large` (~1.2B params, multilingual, runs on CPU/MPS)
+- Prompt generator for mutations: `vinai/bartpho-syllable` (~140M params, Vietnamese-native)
 - Demo: local **Gradio** web app
 
 This is an **Evolutionary Algorithms** course project (team of three).
@@ -46,8 +46,8 @@ gps_research/
 │   └── seed_prompts.json      ← 5 Vietnamese seed prompts G₀
 │
 ├── models/                    ← not committed (download locally)
-│   ├── flan-t5-large/
-│   └── flan-t5-base/
+│   ├── mt0-large/
+│   └── bartpho-syllable/
 │
 ├── results/                   ← GPS outputs (auto-generated)
 │   └── *.json
@@ -72,12 +72,12 @@ app.py (Gradio UI)
     ├── GeneticPromptSearch.run()          ← core/ga_engine.py
     │       │
     │       ├── PromptScorer.score_all()   ← core/scorer.py
-    │       │       └── flan-t5-large (accuracy on dev set)
+    │       │       └── mt0-large (accuracy on dev set)
     │       │
     │       └── PromptMutator.mutate()       ← mutation/__init__.py
     │               ├── back_translate()       (deep-translator, no GPU)
-    │               ├── SentenceContinuation     (flan-t5-base)
-    │               └── ClozeGenerator           (flan-t5-base)
+    │               ├── SentenceContinuation     (bartpho-syllable)
+    │               └── ClozeGenerator           (bartpho-syllable)
     │
     └── data/vi_sentiment_dev.json         ← 32 examples, 3 balanced labels
 ```
@@ -148,8 +148,8 @@ The GA engine filters out prompts without a placeholder.
 
 | Decision | Rationale |
 |---|---|
-| `flan-t5-large` as scorer | Replaces T0 (11B) — fits ~16GB MacBook (~3GB RAM) |
-| `flan-t5-base` as generator | Replaces T5-XXL (11B) — lighter, enough diversity for mutation |
+| `mt0-large` as scorer | Multilingual T0 (~1.2B), understands Vietnamese, fits ~16GB MacBook (~5GB RAM) |
+| `bartpho-syllable` as generator | Vietnamese-native BART (~140M), no translation needed for SC/Cloze |
 | `strategy="sc"` as default | Sentence Continuation reached 61.72% in the paper (best of three) |
 | `top_p=0.9` when sampling | Matches the original paper |
 | `n_iter=4` in demo | Enough to see convergence; ~15–20 min on CPU |
@@ -167,10 +167,10 @@ pip install -r requirements.txt
 # Download models (run once)
 python -c "
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-AutoTokenizer.from_pretrained('google/flan-t5-large').save_pretrained('./models/flan-t5-large')
-AutoModelForSeq2SeqLM.from_pretrained('google/flan-t5-large').save_pretrained('./models/flan-t5-large')
-AutoTokenizer.from_pretrained('google/flan-t5-base').save_pretrained('./models/flan-t5-base')
-AutoModelForSeq2SeqLM.from_pretrained('google/flan-t5-base').save_pretrained('./models/flan-t5-base')
+AutoTokenizer.from_pretrained('bigscience/mt0-large').save_pretrained('./models/mt0-large')
+AutoModelForSeq2SeqLM.from_pretrained('bigscience/mt0-large').save_pretrained('./models/mt0-large')
+AutoTokenizer.from_pretrained('vinai/bartpho-syllable').save_pretrained('./models/bartpho-syllable')
+AutoModelForSeq2SeqLM.from_pretrained('vinai/bartpho-syllable').save_pretrained('./models/bartpho-syllable')
 "
 
 python data/prepare_data.py
@@ -188,7 +188,7 @@ python app.py
 - **No** soft prompts (hard/discrete text prompts only)
 - **No** GPU required (CPU/MPS are fine)
 - **No** datasets other than UIT-VSFC for the main task (consistent comparisons)
-- **Do not** commit `models/` (~4GB)
+- **Do not** commit `models/` (~6GB)
 
 ---
 
