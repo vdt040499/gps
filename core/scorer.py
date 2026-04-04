@@ -62,7 +62,12 @@ class PromptScorer:
                 correct += 1
         return correct / len(examples)
 
-    def score_all(self, prompts, dev_set):
+    def score_all(self, prompts, dev_set, desc="Scoring prompts"):
         """Score every prompt in the population on the dev set."""
+        from tqdm import tqdm
+
         labels = list({ex["label"] for ex in dev_set})
-        return {p: self.score_one(p, dev_set, labels) for p in prompts}
+        results: dict[str, float] = {}
+        for p in tqdm(prompts, desc=desc, leave=False):
+            results[p] = self.score_one(p, dev_set, labels)
+        return results

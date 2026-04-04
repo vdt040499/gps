@@ -9,7 +9,7 @@ from core.scorer import PromptScorer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
-Callback = Callable[[int, list[str], dict[str, float]], None]
+Callback = Callable[[int, list[str], dict[str, float], dict[str, float]], None]
 
 
 class GeneticPromptSearch:
@@ -34,15 +34,21 @@ class GeneticPromptSearch:
             dev_set: Labeled examples, e.g. [{"text": str, "label": str}, ...].
             n_iter: Number of generations.
             strategy: Mutation strategy key passed to the mutator (bt / sc / cloze / all).
-            callback: Optional ``fn(gen, prompts, scores)`` after each generation.
+            callback: Optional ``fn(gen, prompts, scores, all_scores)`` after each generation.
         """
+        from tqdm import tqdm
+
         population = list(seed_prompts)
         history: list[dict] = []
 
-        for t in range(n_iter):
+        for t in tqdm(range(n_iter), desc="GPS — tổng tiến trình", unit="gen"):
+            gen_label = f"Gen {t+1}/{n_iter}"
             log.info(f"=== Generation {t} — {len(population)} prompts ===")
 
-            scores = self.scorer.score_all(population, dev_set)
+            scores = self.scorer.score_all(
+                population, dev_set,
+                desc=f"[{gen_label}] Scoring {len(population)} prompts",
+            )
 
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
             top_k_prompts = [p for p, _ in ranked[: self.top_k]]
@@ -57,7 +63,7 @@ class GeneticPromptSearch:
             )
 
             if callback:
-                callback(gen=t, prompts=top_k_prompts, scores=top_k_scores)
+                callback(gen=t, prompts=top_k_prompts, scores=top_k_scores, all_scores=scores)
 
             if t < n_iter - 1:
                 new_candidates = self.mutator.mutate(
@@ -73,7 +79,11 @@ class GeneticPromptSearch:
             all_candidates.extend(h["prompts"])
         all_candidates = list(dict.fromkeys(all_candidates))
 
-        final_scores = self.scorer.score_all(all_candidates, dev_set)
+        final_scores = self.scorer.score_all(
+            all_candidates, dev_set,
+            desc=f"[Final] Rescoring {len(all_candidates)} prompts",
+        )
+
         final_ranked = sorted(
             final_scores.items(),
             key=lambda x: x[1],
