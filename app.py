@@ -1,462 +1,529 @@
-# app.py — Gradio web demo
+# app.py — Gradio web demo (GPS-VI)
 import json
 from pathlib import Path
 
-import core.warnings_config  # noqa: F401 — before gradio/torch (see core/warnings_config.py)
+import core.warnings_config  # noqa: F401
 
 import gradio as gr
-import plotly.graph_objects as go
 
 from core.ga_engine import GeneticPromptSearch
 from core.scorer import PromptScorer
 from mutation import PromptMutator
 
 _REPO_ROOT = Path(__file__).resolve().parent
-_DATA_DIR = _REPO_ROOT / "data"
-_DEV_PATH = _DATA_DIR / "vi_sentiment_dev.json"
+_DATA_DIR  = _REPO_ROOT / "data"
+_DEV_PATH  = _DATA_DIR / "vi_sentiment_dev.json"
 _SEEDS_PATH = _DATA_DIR / "seed_prompts.json"
+_LABELS_VI  = ("tích cực", "tiêu cực", "trung lập")
 
-_LABELS_VI = ("tích cực", "tiêu cực", "trung lập")
-
-# Loaded once at startup
-scorer = PromptScorer()
+scorer  = PromptScorer()
 mutator = PromptMutator()
-with open(_DEV_PATH, encoding="utf-8") as f:
-    dev_set = json.load(f)
-with open(_SEEDS_PATH, encoding="utf-8") as f:
-    seeds = json.load(f)
+with open(_DEV_PATH,   encoding="utf-8") as f: dev_set = json.load(f)
+with open(_SEEDS_PATH, encoding="utf-8") as f: seeds   = json.load(f)
 
 gen_logs: list[dict] = []
-is_running = False
 
-# ---------------------------------------------------------------------------
-# Custom CSS
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# CSS
+# ─────────────────────────────────────────────────────────────────────────────
 CUSTOM_CSS = """
-/* Header */
-.gps-header {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    color: white;
-    padding: 24px 32px;
-    border-radius: 12px;
-    margin-bottom: 16px;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* Force full width and dark background */
+body, .gradio-container, #root {
+    font-family: 'Inter', system-ui, sans-serif !important;
+    background: #0d1117 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+}
+.main.svelte-1kyws56, .wrap.svelte-1kyws56 {
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* === Hero === */
+.gps-hero {
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 55%, #24243e 100%);
+    border-radius: 16px;
+    padding: 32px 40px 28px;
+    margin-bottom: 24px;
     text-align: center;
-}
-.gps-header h1 {
-    margin: 0 0 6px 0;
-    font-size: 1.6rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-}
-.gps-header p {
-    margin: 0;
-    opacity: 0.75;
-    font-size: 0.95rem;
-}
-
-/* Card sections */
-.card-section {
-    background: #fff;
-    border: 1px solid #e5e7eb;
-    border-radius: 10px;
-    padding: 20px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    margin-bottom: 12px;
-}
-
-/* Population table */
-.pop-table {
-    width: 100%;
-    border-collapse: separate;
-    border-spacing: 0;
-    font-size: 0.88rem;
-    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.08);
+    position: relative;
     overflow: hidden;
 }
-.pop-table th {
-    background: #f8fafc;
-    color: #475569;
-    font-weight: 600;
-    text-transform: uppercase;
-    font-size: 0.75rem;
-    letter-spacing: 0.05em;
-    padding: 10px 14px;
-    text-align: left;
-    border-bottom: 2px solid #e2e8f0;
+.gps-hero::before {
+    content: '';
+    position: absolute; inset: 0;
+    background:
+        radial-gradient(ellipse at 25% 50%, rgba(99,102,241,0.18) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 50%, rgba(16,185,129,0.10) 0%, transparent 55%);
+    pointer-events: none;
 }
-.pop-table td {
-    padding: 10px 14px;
-    border-bottom: 1px solid #f1f5f9;
-    vertical-align: middle;
+.gps-hero h1 {
+    position: relative;
+    margin: 0 0 8px;
+    font-size: 1.8rem;
+    font-weight: 800;
+    letter-spacing: -0.035em;
+    background: linear-gradient(120deg, #e0e7ff 0%, #a5b4fc 45%, #34d399 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
-.pop-table tr:nth-child(even) td {
-    background: #f8fafc;
-}
-.pop-table tr:hover td {
-    background: #f0f9ff;
-}
-.pop-table .top-row td {
-    background: linear-gradient(90deg, #fefce8 0%, #fef9c3 100%) !important;
-    font-weight: 600;
-}
-.pop-table .rank-cell {
-    text-align: center;
-    font-weight: 700;
-    width: 50px;
-}
-.pop-table .score-cell {
-    width: 160px;
-}
-
-/* Accuracy bar */
-.acc-bar-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-.acc-bar-bg {
-    flex: 1;
-    height: 8px;
-    background: #e2e8f0;
-    border-radius: 4px;
-    overflow: hidden;
-}
-.acc-bar-fill {
-    height: 100%;
-    border-radius: 4px;
-    transition: width 0.3s ease;
-}
-.acc-pct {
-    font-weight: 600;
-    font-size: 0.85rem;
-    min-width: 48px;
-    text-align: right;
-}
-
-/* Best prompt box */
-.best-prompt-card {
-    background: linear-gradient(135deg, #ecfdf5, #f0fdf4);
-    border: 1px solid #86efac;
-    border-radius: 10px;
-    padding: 16px 20px;
-}
-
-/* Status banner */
-.status-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 12px 18px;
-    border-radius: 8px;
+.gps-hero .hero-sub {
+    position: relative;
+    color: rgba(255,255,255,0.48);
     font-size: 0.9rem;
-    font-weight: 500;
-    margin-bottom: 10px;
+    margin: 0 0 16px;
 }
-.status-running {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1e40af;
+.gps-hero .badges {
+    position: relative;
+    display: flex; gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
 }
-.status-done {
-    background: #f0fdf4;
-    border: 1px solid #bbf7d0;
-    color: #166534;
+.gps-hero .hb {
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 0.73rem;
+    font-weight: 600;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.6);
+    border: 1px solid rgba(255,255,255,0.1);
 }
+
+/* === Section label === */
+.sec-lbl {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #818cf8;
+    margin: 20px 0 10px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid rgba(129,140,248,0.15);
+}
+
+/* === Status banner === */
+.st-banner {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 0.87rem; font-weight: 500;
+    margin-bottom: 14px;
+}
+.st-run  { background: rgba(59,130,246,0.10); border: 1px solid rgba(59,130,246,0.22); color: #93c5fd; }
+.st-done { background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.22); color: #6ee7b7; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.spinner {
-    width: 16px; height: 16px;
-    border: 2.5px solid #bfdbfe;
-    border-top-color: #3b82f6;
+.sp {
+    width: 14px; height: 14px;
+    border: 2px solid rgba(59,130,246,0.25);
+    border-top-color: #60a5fa;
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    animation: spin 0.75s linear infinite;
     flex-shrink: 0;
 }
 
-/* Override dark mode if needed */
-.dark .pop-table th { background: #1e293b; color: #94a3b8; border-bottom-color: #334155; }
-.dark .pop-table td { border-bottom-color: #1e293b; }
-.dark .pop-table tr:nth-child(even) td { background: #0f172a; }
-.dark .pop-table .top-row td { background: linear-gradient(90deg, #422006 0%, #713f12 100%) !important; }
-.dark .status-running { background: #1e293b; border-color: #1e3a5f; color: #93c5fd; }
-.dark .status-done { background: #052e16; border-color: #166534; color: #86efac; }
+/* === 3-col stat cards === */
+.stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+}
+.s-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    padding: 16px 18px;
+    text-align: center;
+}
+.s-card .sv { font-size: 1.55rem; font-weight: 800; line-height: 1.2; }
+.s-card .sl { font-size: 0.69rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-top: 3px; }
+.c-blue  { color: #60a5fa; }
+.c-amber { color: #fbbf24; }
+.c-green { color: #34d399; }
+
+/* === Best prompt card === */
+.bp-card {
+    background: rgba(16,185,129,0.06);
+    border: 1px solid rgba(16,185,129,0.18);
+    border-left: 4px solid #34d399;
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+}
+.bp-lbl {
+    font-size: 0.68rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.07em;
+    color: #34d399; margin-bottom: 8px;
+}
+.bp-text {
+    font-size: 0.93rem; color: #f1f5f9;
+    line-height: 1.6; font-weight: 500;
+    word-break: break-word;
+}
+.bp-chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.bp-chip {
+    padding: 3px 10px; border-radius: 8px;
+    font-size: 0.72rem; font-weight: 600;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #cbd5e1;
+}
+
+/* === Table === */
+.ptbl {
+    width: 100%;
+    border-collapse: separate; border-spacing: 0;
+    font-size: 0.84rem;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.07);
+}
+.ptbl th {
+    background: rgba(255,255,255,0.05);
+    color: #94a3b8;
+    font-weight: 700; text-transform: uppercase;
+    font-size: 0.67rem; letter-spacing: 0.06em;
+    padding: 11px 13px; text-align: left;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.ptbl td {
+    padding: 11px 13px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle; color: #e2e8f0;
+}
+.ptbl tbody tr:hover td { background: rgba(99,102,241,0.05); }
+.ptbl .t1 td { background: rgba(16,185,129,0.07) !important; }
+.ptbl .rc {
+    text-align: center; font-weight: 800;
+    width: 44px; color: #64748b;
+}
+.ptbl .t1 .rc { color: #34d399; }
+.ptbl .pc {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ptbl .sc { width: 120px; }
+
+/* Score bar */
+.sb { display: flex; align-items: center; gap: 7px; }
+.sb-bg { flex: 1; height: 5px; background: rgba(255,255,255,0.07); border-radius: 3px; overflow: hidden; }
+.sb-fill { height: 100%; border-radius: 3px; transition: width .3s ease; }
+.sb-v { font-weight: 700; font-size: 0.79rem; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Naturalness pill */
+.np { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 0.73rem; font-weight: 700; }
+.np-h { background: rgba(16,185,129,0.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.25); }
+.np-m { background: rgba(251,191,36,0.12); color: #fde68a; border: 1px solid rgba(251,191,36,0.2); }
+.np-l { background: rgba(239,68,68,0.12);  color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
+
+/* Empty state */
+.es { text-align: center; padding: 48px 20px; color: #64748b; }
+.es .ei { font-size: 2.2rem; margin-bottom: 10px; opacity: 0.4; }
+.es .et { font-size: 0.88rem; font-weight: 500; }
+.es .esu{ font-size: 0.76rem; color: #475569; margin-top: 4px; }
+
+/* Test result */
+.tr-box {
+    margin-top: 10px; padding: 16px 20px;
+    border-radius: 10px;
+    background: rgba(99,102,241,0.07);
+    border: 1px solid rgba(99,102,241,0.16);
+}
+.tr-pred { font-size: 1.25rem; font-weight: 800; }
+.tr-pos { color: #34d399; }
+.tr-neg { color: #f87171; }
+.tr-neu { color: #fbbf24; }
+.tr-rendered { margin-top: 10px; font-size: 0.8rem; color: #94a3b8; line-height: 1.55; word-break: break-word; }
 """
 
+# ─────────────────────────────────────────────────────────────────────────────
+# HTML helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _bar_color(score: float) -> str:
-    if score >= 0.6:
-        return "#10b981"
-    if score >= 0.4:
-        return "#f59e0b"
-    return "#ef4444"
+def _sc(v: float) -> str:
+    if v >= 0.6: return "#34d399"
+    if v >= 0.4: return "#fbbf24"
+    return "#f87171"
 
+def _np(v: float) -> str:
+    cls = "np-h" if v >= 0.5 else ("np-m" if v >= 0.3 else "np-l")
+    return f'<span class="np {cls}">{v:.2f}</span>'
 
-def build_population_html(all_scores: dict[str, float]) -> str:
-    """Build an HTML table for the full population, sorted descending by score."""
-    if not all_scores:
-        return "<p style='color:#94a3b8;text-align:center;padding:24px;'>Chưa có dữ liệu. Hãy chạy GPS trước.</p>"
-
-    ranked = sorted(all_scores.items(), key=lambda x: x[1], reverse=True)
-
-    rows_html = ""
-    for i, (prompt, score) in enumerate(ranked):
-        rank = i + 1
-        is_top = rank == 1
-        row_class = 'class="top-row"' if is_top else ""
-        rank_display = f"🥇 {rank}" if is_top else str(rank)
-        truncated = (prompt[:100] + "…") if len(prompt) > 100 else prompt
-        color = _bar_color(score)
-        bar_width = max(score * 100, 2)
-
-        rows_html += f"""
-        <tr {row_class}>
-            <td class="rank-cell">{rank_display}</td>
-            <td title="{prompt.replace('"', '&quot;')}">{truncated}</td>
-            <td class="score-cell">
-                <div class="acc-bar-wrap">
-                    <div class="acc-bar-bg">
-                        <div class="acc-bar-fill" style="width:{bar_width:.1f}%;background:{color};"></div>
-                    </div>
-                    <span class="acc-pct" style="color:{color};">{score:.1%}</span>
-                </div>
-            </td>
-        </tr>"""
-
-    return f"""
-    <table class="pop-table">
-        <thead>
-            <tr><th style="width:50px;">#</th><th>Prompt</th><th style="width:160px;">Accuracy</th></tr>
-        </thead>
-        <tbody>{rows_html}</tbody>
-    </table>"""
-
-
-def _status_html(gen_done: int, total: int, running: bool) -> str:
-    """Small banner showing current GPS progress."""
-    if running:
-        return (
-            f'<div class="status-banner status-running">'
-            f'<div class="spinner"></div>'
-            f'Đang chạy Generation {gen_done + 1}/{total} — scoring + mutation…'
-            f'</div>'
-        )
+def _stats_html(scores: dict) -> str:
+    vals = [v for v in scores.values() if isinstance(v, dict)]
+    if not vals: return ""
+    ba = max(vals, key=lambda s: s["accuracy"])
+    bn = max(vals, key=lambda s: s["naturalness"])
+    bc = max(vals, key=lambda s: s["combined"])
     return (
-        f'<div class="status-banner status-done">'
-        f'Hoàn thành {total}/{total} generations'
-        f'</div>'
+        '<div class="stats-row">'
+        f'<div class="s-card"><div class="sv c-blue">{ba["accuracy"]:.1%}</div><div class="sl">Best Accuracy</div></div>'
+        f'<div class="s-card"><div class="sv c-amber">{bn["naturalness"]:.2f}</div><div class="sl">Best Naturalness</div></div>'
+        f'<div class="s-card"><div class="sv c-green">{bc["combined"]:.1%}</div><div class="sl">Best Combined</div></div>'
+        '</div>'
     )
 
-
-def _build_chart(logs):
-    """Build convergence chart from gen_logs so far."""
-    if not logs:
-        return go.Figure()
-    gens = [h["gen"] for h in logs]
-    top1s = [max(h["scores"].values()) for h in logs]
-    avg_s = [sum(h["scores"].values()) / len(h["scores"]) for h in logs]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=gens, y=top1s, name="Top-1",
-        mode="lines+markers",
-        line=dict(color="#10b981", width=2.5),
-        marker=dict(size=8),
-    ))
-    fig.add_trace(go.Scatter(
-        x=gens, y=avg_s, name="Mean top-K",
-        mode="lines+markers",
-        line=dict(color="#6366f1", width=1.5, dash="dot"),
-        marker=dict(size=5),
-    ))
-    fig.update_layout(
-        xaxis_title="Generation",
-        yaxis_title="Accuracy",
-        yaxis_tickformat=".0%",
-        template="simple_white",
-        margin=dict(l=40, r=20, t=10, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=300,
+def _best_html(scores: dict) -> str:
+    ranked = sorted(scores.items(), key=lambda x: x[1]["combined"] if isinstance(x[1], dict) else 0, reverse=True)
+    if not ranked: return ""
+    p, d = ranked[0]
+    if not isinstance(d, dict): return ""
+    return (
+        '<div class="bp-card">'
+        '<div class="bp-lbl">🏆 PROMPT TỐT NHẤT</div>'
+        f'<div class="bp-text">{p}</div>'
+        '<div class="bp-chips">'
+        f'<span class="bp-chip"><span style="color:#60a5fa">●</span> Acc {d["accuracy"]:.1%}</span>'
+        f'<span class="bp-chip"><span style="color:#fbbf24">●</span> Nat {d["naturalness"]:.2f}</span>'
+        f'<span class="bp-chip"><span style="color:#34d399">●</span> Combined {d["combined"]:.1%}</span>'
+        '</div></div>'
     )
-    return fig
+
+def build_pop_html(scores: dict) -> str:
+    """Stats + best-prompt card + full table."""
+    if not scores:
+        return ('<div class="es"><div class="ei">🧬</div>'
+                '<div class="et">Chưa có dữ liệu</div>'
+                '<div class="esu">Chọn cấu hình và nhấn Chạy GPS để bắt đầu</div></div>')
+
+    ranked = sorted(
+        scores.items(),
+        key=lambda x: x[1]["combined"] if isinstance(x[1], dict) else x[1],
+        reverse=True,
+    )
+
+    rows = ""
+    for i, (prompt, sd) in enumerate(ranked):
+        r = i + 1
+        rc = ' class="t1"' if r == 1 else ""
+        rd = "👑" if r == 1 else str(r)
+        tr = (prompt[:90] + "…") if len(prompt) > 90 else prompt
+        esc = prompt.replace('"', "&quot;")
+
+        if isinstance(sd, dict):
+            a, n, c = sd["accuracy"], sd["naturalness"], sd["combined"]
+        else:
+            a, n, c = float(sd), 0.0, float(sd)
+
+        ac, cc = _sc(a), _sc(c)
+        rows += (
+            f'<tr{rc}>'
+            f'<td class="rc">{rd}</td>'
+            f'<td class="pc" title="{esc}">{tr}</td>'
+            f'<td class="sc"><div class="sb"><div class="sb-bg"><div class="sb-fill" style="width:{max(a*100,2):.0f}%;background:{ac}"></div></div>'
+            f'<span class="sb-v" style="color:{ac}">{a:.1%}</span></div></td>'
+            f'<td style="text-align:center">{_np(n)}</td>'
+            f'<td class="sc"><div class="sb"><div class="sb-bg"><div class="sb-fill" style="width:{max(c*100,2):.0f}%;background:{cc}"></div></div>'
+            f'<span class="sb-v" style="color:{cc}">{c:.1%}</span></div></td>'
+            f'</tr>'
+        )
+
+    tbl = (
+        '<table class="ptbl"><thead><tr>'
+        '<th style="width:44px">#</th><th>Prompt</th>'
+        '<th style="width:120px">Accuracy</th><th style="width:90px">Natural</th><th style="width:120px">Combined</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table>'
+    )
+    return _stats_html(scores) + _best_html(scores) + tbl
 
 
-def run_gps(n_iter, top_k, strategy, progress=gr.Progress(track_tqdm=True)):
-    """Generator: yield (chart, pop_html, best_prompt, gen_slider, status) after each generation."""
-    import queue
-    import threading
+def _status(gen: int, total: int, running: bool) -> str:
+    if running:
+        return (f'<div class="st-banner st-run"><div class="sp"></div>'
+                f'Đang chạy Generation {gen+1}/{total} — scoring + mutation…</div>')
+    return f'<div class="st-banner st-done">✅ Hoàn thành {total}/{total} generations</div>'
 
-    global gen_logs, is_running
-    gen_logs, is_running = [], True
-    n_iter = int(n_iter)
+# ─────────────────────────────────────────────────────────────────────────────
+# GPS runner — threading-based generator
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_gps(n_iter, top_k, strategy, alpha):
+    """Generator: yields (status_html, pop_html, best_text, gen_slider_update)."""
+    import queue, threading
+
+    global gen_logs
+    gen_logs = []
+    n_iter, alpha = int(n_iter), float(alpha)
 
     gps = GeneticPromptSearch(scorer, mutator, top_k=int(top_k))
-    gen_queue: queue.Queue = queue.Queue()
+    q: queue.Queue = queue.Queue()
 
     def on_gen(gen, prompts, scores, all_scores):
-        entry = {
-            "gen": gen,
-            "prompts": prompts,
-            "scores": scores,
-            "all_scores": all_scores,
-        }
+        entry = {"gen": gen, "prompts": prompts, "scores": scores, "all_scores": all_scores}
         gen_logs.append(entry)
-        gen_queue.put(entry)
-
-    result_holder: list = []
+        q.put(("gen", entry))
 
     def _run():
-        best, history, _final_scores = gps.run(
-            seed_prompts=seeds,
-            dev_set=dev_set,
-            n_iter=n_iter,
-            strategy=strategy,
+        best, _, _ = gps.run(
+            seed_prompts=seeds, dev_set=dev_set,
+            n_iter=n_iter, strategy=strategy, alpha=alpha,
             callback=on_gen,
         )
-        result_holder.append(best)
-        gen_queue.put(None)  # sentinel: done
+        q.put(("done", best))
 
-    # Initial status: scoring first generation
-    yield (
-        go.Figure(),
-        "<p style='color:#94a3b8;text-align:center;padding:24px;'>Đang scoring generation đầu tiên…</p>",
-        "",
-        gr.update(visible=False),
-        _status_html(0, n_iter, running=True),
-    )
+    # — Initial placeholder —
+    empty = ('<div class="es"><div class="ei">⏳</div>'
+             '<div class="et">Đang scoring generation đầu tiên…</div></div>')
+    yield _status(0, n_iter, True), empty, "", gr.update(visible=False)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
+    best_prompts = []
     while True:
-        entry = gen_queue.get()
-        if entry is None:
+        kind, payload = q.get()
+
+        if kind == "gen":
+            entry   = payload
+            g       = entry["gen"] + 1
+            html    = build_pop_html(entry["all_scores"])
+            ranked  = sorted(
+                entry["all_scores"].items(),
+                key=lambda x: x[1]["combined"] if isinstance(x[1], dict) else x[1],
+                reverse=True,
+            )
+            best    = ranked[0][0] if ranked else "—"
+            is_last = g >= n_iter
+
+            yield (
+                _status(g, n_iter, not is_last),
+                html,
+                best,
+                gr.update(maximum=n_iter, value=g, visible=True),
+            )
+
+        else:  # "done"
+            best_prompts = payload or []
             break
 
-        gen_num = entry["gen"] + 1  # 1-based
-        fig = _build_chart(gen_logs)
-        pop_html = build_population_html(entry["all_scores"])
-
-        ranked = sorted(entry["all_scores"].items(), key=lambda x: x[1], reverse=True)
-        best_text = ranked[0][0] if ranked else "—"
-        slider_update = gr.update(maximum=n_iter, value=gen_num, visible=True)
-
-        is_last = gen_num >= n_iter
-        if is_last:
-            # Last generation scored, but final rescore still running
-            status = _status_html(gen_num, n_iter, running=True)
-            yield fig, pop_html, best_text, slider_update, status
-        else:
-            # Show completed gen, then immediately show "running next gen" spinner
-            status = _status_html(gen_num, n_iter, running=True)
-            yield fig, pop_html, best_text, slider_update, status
-
     thread.join()
-    is_running = False
 
-    # Final yield — done
+    # — Final repaint with best result —
     if gen_logs:
-        fig = _build_chart(gen_logs)
-        last = gen_logs[-1]
-        pop_html = build_population_html(last["all_scores"])
-        ranked = sorted(last["all_scores"].items(), key=lambda x: x[1], reverse=True)
-        best_text = result_holder[0][0] if result_holder and result_holder[0] else ranked[0][0]
-        slider_update = gr.update(maximum=n_iter, value=n_iter, visible=True)
-        status = _status_html(n_iter, n_iter, running=False)
-        yield fig, pop_html, best_text, slider_update, status
+        last   = gen_logs[-1]
+        html   = build_pop_html(last["all_scores"])
+        ranked = sorted(
+            last["all_scores"].items(),
+            key=lambda x: x[1]["combined"] if isinstance(x[1], dict) else x[1],
+            reverse=True,
+        )
+        best = best_prompts[0] if best_prompts else (ranked[0][0] if ranked else "—")
+        yield (
+            _status(n_iter, n_iter, False),
+            html,
+            best,
+            gr.update(maximum=n_iter, value=n_iter, visible=True),
+        )
 
 
-def update_population_table(gen_idx):
-    """Rebuild population table for the selected generation."""
-    idx = int(gen_idx) - 1  # slider is 1-based
+def update_pop(gen_idx: int):
+    idx = int(gen_idx) - 1
     if idx < 0 or idx >= len(gen_logs):
-        return "<p style='color:#94a3b8;text-align:center;'>Generation chưa có dữ liệu.</p>"
-    return build_population_html(gen_logs[idx]["all_scores"])
+        return ('<div class="es"><div class="ei">📭</div>'
+                '<div class="et">Generation chưa có dữ liệu</div></div>')
+    return build_pop_html(gen_logs[idx]["all_scores"])
 
 
 def test_prompt(prompt_text: str, test_input: str) -> str:
-    """Run one-shot prediction with the best prompt template."""
     if not prompt_text or not test_input:
-        return "Nhập câu cần test và chọn prompt trước."
-    rendered = prompt_text.replace("{{văn_bản}}", test_input)
+        return '<div class="tr-box" style="color:#94a3b8">⚠️ Nhập câu cần test và chọn prompt trước.</div>'
     pred = scorer.predict_label(prompt_text, test_input, list(_LABELS_VI))
-    return f"Dự đoán: **{pred}**\n\nPrompt được render:\n{rendered}"
+    cmap = {"tích cực": "tr-pos", "tiêu cực": "tr-neg", "trung lập": "tr-neu"}
+    cls  = cmap.get(pred, "")
+    rendered = prompt_text.replace("{{văn_bản}}", f'<strong style="color:#e0e7ff">{test_input}</strong>')
+    return (
+        f'<div class="tr-box">'
+        f'<div class="tr-pred {cls}">→ {pred}</div>'
+        f'<div class="tr-rendered">{rendered}</div>'
+        f'</div>'
+    )
 
-
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Gradio UI
-# ---------------------------------------------------------------------------
-with gr.Blocks(title="GPS-VI — Tìm kiếm Prompt Tự động", css=CUSTOM_CSS) as demo:
-    # Header
-    gr.HTML("""
-    <div class="gps-header">
-        <h1>GPS: Tìm kiếm Prompt Tự động cho Tiếng Việt</h1>
-        <p>Genetic Prompt Search — thuật toán di truyền tối ưu prompt cho NLP tiếng Việt</p>
-    </div>
-    """)
+# ─────────────────────────────────────────────────────────────────────────────
+with gr.Blocks(
+    title="GPS-VI — Tìm kiếm Prompt Tự động",
+    css=CUSTOM_CSS,
+    theme=gr.themes.Base(
+        primary_hue=gr.themes.colors.indigo,
+        neutral_hue=gr.themes.colors.slate,
+        font=gr.themes.GoogleFont("Inter"),
+    ),
+) as demo:
 
-    # Controls + Chart
+    # ── Hero ──────────────────────────────────────────────────────────────
+    gr.HTML(
+        '<div class="gps-hero">'
+        '<h1>🧬 GPS — Tìm kiếm Prompt Tự động</h1>'
+        '<p class="hero-sub">Genetic Prompt Search · Tối ưu prompt tiếng Việt bằng thuật toán di truyền</p>'
+        '<div class="badges">'
+        '<span class="hb">🎯 Accuracy + Naturalness</span>'
+        '<span class="hb">🔬 mt0-large</span>'
+        '<span class="hb">🇻🇳 bartpho</span>'
+        '<span class="hb">📊 UIT-VSFC</span>'
+        '</div></div>'
+    )
+
+    # ── Settings ──────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-lbl">⚙️ CÀI ĐẶT THUẬT TOÁN</div>')
+
     with gr.Row():
-        with gr.Column(scale=1, min_width=260):
-            gr.HTML('<div style="font-weight:600;margin-bottom:8px;">Cài đặt</div>')
-            n_iter = gr.Slider(1, 9, value=4, step=1, label="Số vòng lặp (generations)")
+        with gr.Column(scale=1):
+            n_iter = gr.Slider(1, 9, value=4, step=1, label="Số vòng lặp")
+        with gr.Column(scale=1):
             top_k = gr.Slider(2, 10, value=5, step=1, label="Top-K selection")
+        with gr.Column(scale=1):
+            alpha = gr.Slider(0.0, 1.0, value=0.7, step=0.05, label="α — Accuracy vs Naturalness",
+                              info="α=1 → chỉ accuracy · α=0 → chỉ naturalness")
+
+    with gr.Row():
+        with gr.Column(scale=2):
             strategy = gr.Radio(
                 ["bt", "sc", "cloze", "all"],
                 value="sc",
                 label="Chiến lược đột biến",
-                info="bt = Back Translation · sc = Sentence Continuation · cloze = T5 Cloze",
+                info="bt = Back Translation · sc = Sentence Continuation · cloze = Cloze",
             )
-            run_btn = gr.Button("Chạy GPS", variant="primary", size="lg")
+        with gr.Column(scale=1):
+            run_btn = gr.Button("🚀  Chạy GPS", variant="primary", size="lg")
+            gen_slider = gr.Slider(1, 4, value=1, step=1,
+                                   label="📂  Xem Generation", visible=False)
 
-            gr.HTML('<div style="font-weight:600;margin:16px 0 8px;">Chọn Generation</div>')
-            gen_slider = gr.Slider(
-                1, 4, value=4, step=1,
-                label="Generation",
-                visible=False,
-            )
-
-        with gr.Column(scale=3):
-            status_html = gr.HTML(value="")
-            conv_plot = gr.Plot(label="Biểu đồ hội tụ", show_label=False)
-
-    # Population table
-    gr.HTML('<div style="font-weight:600;font-size:1.05rem;margin:8px 0;">Quần thể prompts</div>')
-    pop_table = gr.HTML(
-        value="<p style='color:#94a3b8;text-align:center;padding:24px;'>Chưa có dữ liệu. Hãy chạy GPS trước.</p>"
+    # ── Results ───────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-lbl">📊 KẾT QUẢ</div>')
+    status_html = gr.HTML(value="")
+    pop_table   = gr.HTML(
+        value=(
+            '<div class="es"><div class="ei">🧬</div>'
+            '<div class="et">Chưa có dữ liệu</div>'
+            '<div class="esu">Chọn cấu hình và nhấn Chạy GPS để bắt đầu</div></div>'
+        )
     )
+    best_prompt_box = gr.Textbox(visible=False, label="best")   # hidden state
 
-    # Best prompt
-    gr.HTML('<div style="font-weight:600;font-size:1.05rem;margin:8px 0;">Prompt tốt nhất (#1)</div>')
-    best_prompt_box = gr.Textbox(
-        label="Prompt #1",
-        lines=3,
-        show_label=False,
-        elem_classes=["best-prompt-card"],
-    )
-
-    # Test section
-    gr.HTML('<div style="font-weight:600;font-size:1.05rem;margin:16px 0 8px;">Test thử prompt</div>')
+    # ── Test ──────────────────────────────────────────────────────────────
+    gr.HTML('<div class="sec-lbl">🧪 TEST THỬ PROMPT</div>')
     with gr.Row():
-        with gr.Column(scale=2):
+        with gr.Column(scale=3):
             test_input = gr.Textbox(
                 label="Nhập câu tiếng Việt",
                 lines=2,
-                placeholder="Sản phẩm rất tốt, tôi rất hài lòng!",
+                placeholder="VD: Sản phẩm rất tốt, tôi rất hài lòng!",
             )
-        with gr.Column(scale=1, min_width=120):
-            test_btn = gr.Button("Dự đoán", variant="secondary")
-    test_output = gr.Markdown(label="Kết quả")
+        with gr.Column(scale=1, min_width=160):
+            test_btn = gr.Button("⚡  Dự đoán", variant="secondary", size="lg")
+    test_output = gr.HTML()
 
-    # Wiring
+    # ── Wiring ────────────────────────────────────────────────────────────
     run_btn.click(
-        run_gps,
-        [n_iter, top_k, strategy],
-        [conv_plot, pop_table, best_prompt_box, gen_slider, status_html],
+        fn=run_gps,
+        inputs=[n_iter, top_k, strategy, alpha],
+        outputs=[status_html, pop_table, best_prompt_box, gen_slider],
     )
-    gen_slider.change(
-        update_population_table,
-        [gen_slider],
-        [pop_table],
-    )
-    test_btn.click(test_prompt, [best_prompt_box, test_input], [test_output])
+    gen_slider.change(fn=update_pop, inputs=[gen_slider], outputs=[pop_table])
+    test_btn.click(fn=test_prompt, inputs=[best_prompt_box, test_input], outputs=[test_output])
 
 if __name__ == "__main__":
     demo.launch(share=True)

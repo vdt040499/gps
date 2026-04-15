@@ -1,7 +1,7 @@
 [
-  "Đánh giá sau đây: {{văn_bản}}\nCảm xúc của đánh giá này là gì? Trả lời: tích cực, tiêu cực, hoặc trung lập.",
-  "Hãy phân tích cảm xúc của câu sau: {{văn_bản}}\nĐây là đánh giá tích cực, tiêu cực hay trung lập?",
-  "Cho đoạn văn: {{văn_bản}}\nNgười viết có cảm xúc như thế nào? Chọn: tích cực / tiêu cực / trung lập",
-  "Đọc đánh giá sau và xác định cảm xúc: {{văn_bản}}\nCảm xúc:",
-  "{{văn_bản}}\nDựa vào nội dung trên, đây là nhận xét tích cực, tiêu cực hay trung lập?"
+  "Nhận xét sau thể hiện cảm xúc gì: {{văn_bản}}\nCảm xúc: tích cực, tiêu cực hay trung lập?",
+  "Đây là đánh giá tích cực hay tiêu cực: {{văn_bản}}\nCảm xúc:",
+  "Xác định cảm xúc của câu đánh giá: {{văn_bản}}\nChọn: tích cực / tiêu cực / trung lập",
+  "Câu bình luận này mang cảm xúc gì: {{văn_bản}}\nTrả lời:",
+  "Phân loại cảm xúc đánh giá sau: {{văn_bản}}\nTích cực, tiêu cực hay trung lập?"
 ]

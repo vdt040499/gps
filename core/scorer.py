@@ -6,10 +6,17 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 from core.device_utils import get_torch_device
 from core.model_utils import resolve_model_id
+from core.naturalness import NaturalnessScorer
 
 
 class PromptScorer:
-    """Ranking-based prompt scoring with mt0-large (negative log-loss per label)."""
+    """Multi-objective prompt scoring: accuracy + naturalness.
+
+    Each prompt receives three scores:
+        * accuracy   — fraction of dev-set examples predicted correctly
+        * naturalness — perplexity-based fluency score ∈ (0, 1]
+        * combined   — α * accuracy + (1 − α) * naturalness
+    """
 
     def __init__(self, model_path=None):
         model_id = resolve_model_id(
@@ -26,6 +33,11 @@ class PromptScorer:
         self.device = get_torch_device()
         self.model.to(self.device)
         print(f"Scorer loaded on {self.device}")
+
+        # Reuse the same model for naturalness — zero extra RAM
+        self.naturalness = NaturalnessScorer(
+            self.model, self.tokenizer, self.device,
+        )
 
     def _render(self, template: str, text: str) -> str:
         out = template.replace("{{văn_bản}}", text)
@@ -63,12 +75,25 @@ class PromptScorer:
                 correct += 1
         return correct / len(examples)
 
-    def score_all(self, prompts, dev_set, desc="Scoring prompts"):
-        """Score every prompt in the population on the dev set."""
+    def score_all(self, prompts, dev_set, alpha=0.7, desc="Scoring prompts"):
+        """Score every prompt: accuracy, naturalness, and combined.
+
+        Returns:
+            dict[str, dict] — {prompt: {"accuracy": float,
+                                         "naturalness": float,
+                                         "combined": float}}
+        """
         from tqdm import tqdm
 
         labels = list({ex["label"] for ex in dev_set})
-        results: dict[str, float] = {}
+        results: dict[str, dict] = {}
         for p in tqdm(prompts, desc=desc, leave=False):
-            results[p] = self.score_one(p, dev_set, labels)
+            acc = self.score_one(p, dev_set, labels)
+            nat = self.naturalness.score(p)
+            combined = alpha * acc + (1.0 - alpha) * nat
+            results[p] = {
+                "accuracy": acc,
+                "naturalness": nat,
+                "combined": round(combined, 4),
+            }
         return results
