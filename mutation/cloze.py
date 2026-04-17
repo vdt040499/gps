@@ -122,7 +122,7 @@ class ClozeGenerator:
         if len(vi_words) < 5:
             return []
 
-        max_words = len(vi_words) + 4  # allow moderate expansion
+        max_words = len(vi_words) + 4
 
         results: list[str] = []
         max_attempts = n_candidates * 4
@@ -143,7 +143,7 @@ class ClozeGenerator:
                 out = self.model.generate(
                     **inputs,
                     max_new_tokens=60,
-                    do_sample=True,       # sampling instead of beam search
+                    do_sample=True,
                     top_p=0.9,
                     temperature=0.9,
                 )

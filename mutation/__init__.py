@@ -7,15 +7,25 @@ from mutation.cloze import ClozeGenerator
 
 
 class PromptMutator:
-    """Dispatches mutation strategies for GPS."""
+    """Dispatches mutation strategies for GPS.
 
-    def __init__(self) -> None:
+    If a ``scorer`` is provided, the Sentence Continuation (SC) strategy
+    will share the scorer's already-loaded mt0-large model instead of
+    loading a second copy (~5 GB saved).
+    """
+
+    def __init__(self, scorer=None) -> None:
+        self._scorer = scorer
         self._sc: SentenceContinuation | None = None
         self._cloze: ClozeGenerator | None = None
 
     def _get_sc(self) -> SentenceContinuation:
         if self._sc is None:
-            self._sc = SentenceContinuation()
+            if self._scorer is not None:
+                # Share mt0-large with the scorer — zero extra RAM
+                self._sc = SentenceContinuation.from_scorer(self._scorer)
+            else:
+                self._sc = SentenceContinuation()
         return self._sc
 
     def _get_cloze(self) -> ClozeGenerator:

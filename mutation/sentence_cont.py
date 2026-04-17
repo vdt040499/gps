@@ -1,7 +1,6 @@
 # mutation/sentence_cont.py
 import core.warnings_config  # noqa: F401 — before torch/transformers
 
-import random
 import torch
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
@@ -10,90 +9,102 @@ from core.model_utils import resolve_model_id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Domain anchors — words NEVER masked (keep sentiment/task context intact)
+# Paraphrase templates — inspired by DINO (Schick & Schütze, 2021)
+# as described in GPS paper: "Write two sentences that mean the same thing."
+# Adapted to Vietnamese for this project.
 # ─────────────────────────────────────────────────────────────────────────────
-_PROTECTED = {
-    # Task verbs
-    "đánh", "giá", "xác", "định", "phân", "tích", "phân", "loại",
-    "nhận", "xét", "đọc", "câu", "chọn", "trả", "lời",
-    # Sentiment keywords — critical anchors
-    "cảm", "xúc", "tích", "cực", "tiêu", "trung", "lập",
-    "tốt", "xấu", "hài", "lòng", "hài lòng",
-    # Education domain (when present in seed)
-    "giảng", "viên", "sinh", "môn", "học", "lớp",
-    "giáo", "thầy", "cô", "bài", "khóa",
-}
+_PARAPHRASE_TEMPLATES = [
+    "Viết hai câu có cùng ý nghĩa.\nCâu 1: {prompt}\nCâu 2:",
+    "Write two sentences that mean the same thing.\nSentence 1: {prompt}\nSentence 2:",
+    "Diễn đạt lại câu sau với ý nghĩa tương tự.\nCâu gốc: {prompt}\nCâu mới:",
+]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Whitelist — generated instruction MUST contain ≥1 of these to be kept.
-# This is much more robust than a blacklist approach.
+# This ensures the generated paraphrase stays on-topic for sentiment analysis.
 # ─────────────────────────────────────────────────────────────────────────────
 _REQUIRED_WORDS = [
     "cảm xúc", "tích cực", "tiêu cực", "trung lập",
     "đánh giá", "nhận xét", "phân tích", "phân loại",
     "bình luận", "cảm nhận", "ý kiến", "phản hồi",
+    "sentiment", "positive", "negative", "neutral",
 ]
 
 
 class SentenceContinuation:
-    """Paraphrase prompts by masking ~20-35% of non-protected words.
+    """Generate prompt paraphrases via Sentence Continuation (SC).
 
-    Key design:
-    - Protected words (sentiment labels, task verbs) are never masked so
-      bartpho stays on-topic.
-    - Generated prompts must contain ≥1 whitelist word (domain-relevance
-      whitelist check) to be accepted — much more robust than a blacklist.
-    - Mask ratio kept moderate (20-35%) so structure is preserved.
+    Follows the GPS paper (Xu et al., EMNLP 2022):
+        Use a pretrained language model with the template
+        "Write two sentences that mean the same thing.
+         Sentence 1: <original prompt>. Sentence 2:"
+        to generate continuations as new prompt candidates.
+
+    This project uses mt0-large (already loaded for scoring) as the
+    generation model, since it understands Vietnamese instructions well
+    (multilingual T0, 1.2B params). The paper originally used GPT2-XL
+    or T5LM-XXL.
+
+    Key differences from the masking/cloze approach:
+        - Model generates a COMPLETELY NEW sentence (free generation)
+        - Template explicitly asks for semantic equivalence
+        - Much higher diversity than infilling masked spans
     """
 
-    def __init__(self, model_path=None):
-        model_id = resolve_model_id(
-            model_path,
-            local_relative="models/bartpho-syllable",
-            hub_id="vinai/bartpho-syllable",
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_id, torch_dtype=torch.float32,
-        )
-        self.model.eval()
-        self.device = get_torch_device()
-        self.model.to(self.device)
+    def __init__(self, model_path=None, *, model=None, tokenizer=None, device=None):
+        """Initialise with a fresh model load, or reuse an existing one.
+
+        Args:
+            model_path: Optional explicit model path / Hub id.
+            model, tokenizer, device: If all three are provided, reuse them
+                instead of loading a new copy (saves ~5 GB when the scorer's
+                mt0-large is shared).
+        """
+        if model is not None and tokenizer is not None and device is not None:
+            # Reuse pre-loaded model (e.g. from PromptScorer)
+            self.model = model
+            self.tokenizer = tokenizer
+            self.device = device
+        else:
+            model_id = resolve_model_id(
+                model_path,
+                local_relative="models/mt0-large",
+                hub_id="bigscience/mt0-large",
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_id, torch_dtype=torch.float32,
+            )
+            self.model.eval()
+            self.device = get_torch_device()
+            self.model.to(self.device)
+
+    @classmethod
+    def from_scorer(cls, scorer) -> "SentenceContinuation":
+        """Create an SC instance that shares the scorer's mt0-large model.
+
+        This avoids loading the ~5 GB model a second time.
+
+        Args:
+            scorer: A PromptScorer instance (core.scorer.PromptScorer).
+        """
+        return cls(model=scorer.model, tokenizer=scorer.tokenizer, device=scorer.device)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def _split_placeholder(prompt: str) -> tuple[str, str]:
+        """Separate instruction from placeholder + tail.
+
+        Example:
+            "Đánh giá cảm xúc: {{văn_bản}}\\nTrả lời ..."
+            → ("Đánh giá cảm xúc:", "{{văn_bản}}\\nTrả lời ...")
+        """
         for ph in ("{{văn_bản}}", "{{text}}"):
             if ph in prompt:
                 parts = prompt.split(ph, 1)
                 return parts[0].strip(), ph + parts[1]
         return prompt.strip(), ""
-
-    def _mask_words(self, words: list[str], mask_ratio: float) -> str | None:
-        """Mask mask_ratio of words that are NOT in _PROTECTED."""
-        if len(words) < 4:
-            return None
-
-        # Candidate positions: interior, word not protected
-        candidates = [
-            i for i in range(1, len(words) - 1)
-            if words[i].lower().rstrip(".,?!:/") not in _PROTECTED
-        ]
-
-        if len(candidates) < 1:
-            return None  # nothing safe to mask → skip
-
-        n_masks = max(1, int(len(candidates) * mask_ratio))
-        n_masks = min(n_masks, len(candidates))
-
-        random.shuffle(candidates)
-        mask_set = set(candidates[:n_masks])
-
-        return " ".join(
-            self.tokenizer.mask_token if i in mask_set else w
-            for i, w in enumerate(words)
-        )
 
     @staticmethod
     def _is_relevant(text: str) -> bool:
@@ -106,31 +117,52 @@ class SentenceContinuation:
         words = text.split()
         return " ".join(words[:max_words]) if len(words) > max_words else text
 
+    @staticmethod
+    def _clean_generated(text: str) -> str:
+        """Post-process generated text: strip quotes, numbering, etc."""
+        text = text.strip()
+        # Remove leading "Câu 2:" or "Sentence 2:" artifacts
+        for prefix in ("Câu 2:", "Câu 2 :", "Sentence 2:", "Sentence 2 :"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix):].strip()
+        # Remove surrounding quotes if model added them
+        if (text.startswith('"') and text.endswith('"')) or \
+           (text.startswith("'") and text.endswith("'")):
+            text = text[1:-1].strip()
+        return text
+
     # ── main ─────────────────────────────────────────────────────────────────
 
     def generate(self, prompt: str, n_candidates: int = 5) -> list[str]:
+        """Generate n_candidates paraphrases of the instruction part of prompt.
+
+        Uses multiple paraphrase templates and sampling to produce diverse
+        candidates. Each candidate is validated for domain relevance and
+        placeholder presence.
+        """
         instruction, suffix = self._split_placeholder(prompt)
         if not instruction:
             return []
 
         words = instruction.split()
-        if len(words) < 4:
+        if len(words) < 3:
             return []
 
-        max_words = len(words) + 4
+        max_words = len(words) + 6  # allow slightly longer paraphrases
         results: list[str] = []
-        max_attempts = n_candidates * 6  # extra budget for whitelist rejections
+        max_attempts = n_candidates * 6  # extra budget for relevance rejections
 
+        template_idx = 0
         for _ in range(max_attempts):
-            # Moderate masking: 20-35% — keeps enough structure for on-topic output
-            mask_ratio = random.uniform(0.20, 0.35)
+            # Rotate through templates for diversity
+            template = _PARAPHRASE_TEMPLATES[template_idx % len(_PARAPHRASE_TEMPLATES)]
+            template_idx += 1
 
-            masked_text = self._mask_words(words, mask_ratio)
-            if not masked_text:
-                continue
+            # Build the SC input: template with original instruction
+            sc_input = template.format(prompt=instruction)
 
             inputs = self.tokenizer(
-                masked_text,
+                sc_input,
                 return_tensors="pt",
                 truncation=True,
                 max_length=512,
@@ -139,29 +171,33 @@ class SentenceContinuation:
             with torch.no_grad():
                 out = self.model.generate(
                     **inputs,
-                    max_new_tokens=80,
+                    max_new_tokens=100,
                     do_sample=True,
                     top_p=0.9,
                     temperature=0.8,
                 )
 
-            vi_text = self.tokenizer.decode(out[0], skip_special_tokens=True).strip()
+            generated = self.tokenizer.decode(out[0], skip_special_tokens=True).strip()
+            generated = self._clean_generated(generated)
 
-            if not vi_text or len(vi_text) < 8:
+            if not generated or len(generated) < 6:
                 continue
 
-            vi_text = self._truncate(vi_text, max_words)
-            new_prompt = (vi_text.strip() + " " + suffix).strip()
+            generated = self._truncate(generated, max_words)
+            new_prompt = (generated.strip() + " " + suffix).strip()
 
             # ── Validity checks ───────────────────────────────────────────
             if new_prompt == prompt:
                 continue
-            if "{{văn_bản}}" not in new_prompt:
-                continue
+            if "{{văn_bản}}" not in new_prompt and "{{text}}" not in new_prompt:
+                # The generated text won't have placeholder — append suffix
+                # which already contains the placeholder
+                if not suffix:
+                    continue
             if new_prompt in results:
                 continue
             # WHITELIST: must contain at least one domain-relevant word
-            if not self._is_relevant(vi_text):
+            if not self._is_relevant(generated):
                 continue
             # ─────────────────────────────────────────────────────────────
 

@@ -76,7 +76,7 @@ app.py (Gradio UI)
     │       │
     │       └── PromptMutator.mutate()       ← mutation/__init__.py
     │               ├── back_translate()       (deep-translator, no GPU)
-    │               ├── SentenceContinuation     (bartpho-syllable)
+    │               ├── SentenceContinuation     (mt0-large, shared)
     │               └── ClozeGenerator           (bartpho-syllable)
     │
     └── data/vi_sentiment_dev.json         ← 32 examples, 3 balanced labels
@@ -149,7 +149,8 @@ The GA engine filters out prompts without a placeholder.
 | Decision | Rationale |
 |---|---|
 | `mt0-large` as scorer | Multilingual T0 (~1.2B), understands Vietnamese, fits ~16GB MacBook (~5GB RAM) |
-| `bartpho-syllable` as generator | Vietnamese-native BART (~140M), no translation needed for SC/Cloze |
+| `bartpho-syllable` for Cloze | Vietnamese-native BART (~140M), used for masked span infilling |
+| `mt0-large` for SC | Shared with scorer (zero extra RAM), template-based paraphrase generation per paper |
 | `strategy="sc"` as default | Sentence Continuation reached 61.72% in the paper (best of three) |
 | `top_p=0.9` when sampling | Matches the original paper |
 | `n_iter=4` in demo | Enough to see convergence; ~15–20 min on CPU |

@@ -17,7 +17,7 @@ _SEEDS_PATH = _DATA_DIR / "seed_prompts.json"
 _LABELS_VI  = ("tích cực", "tiêu cực", "trung lập")
 
 scorer  = PromptScorer()
-mutator = PromptMutator()
+mutator = PromptMutator(scorer=scorer)
 with open(_DEV_PATH,   encoding="utf-8") as f: dev_set = json.load(f)
 with open(_SEEDS_PATH, encoding="utf-8") as f: seeds   = json.load(f)
 
